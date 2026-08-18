@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <title>Gestão Profissional - E-phone</title>
+    <!-- Biblioteca SheetJS para leitura de planilhas Excel com precisão -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <style>
         :root { 
             --primary: #28a745; 
@@ -24,6 +26,8 @@
         .btn-header:hover { background: #edf2f7; }
         .btn-header-primary { background: #0d6efd; color: white; border-color: #0d6efd; }
         .btn-header-primary:hover { background: #0b5ed7; }
+        .btn-header-excel { background: #1d6f42; color: white; border-color: #1d6f42; }
+        .btn-header-excel:hover { background: #155734; }
 
         .top-filter-bar {
             background: #2b3035;
@@ -142,6 +146,10 @@
         </div>
         
         <div class="header-actions">
+            <!-- Botão de Importar Planilha Excel -->
+            <button onclick="document.getElementById('inputExcelImport').click()" class="btn-header btn-header-excel">📥 Importar Planilha Excel</button>
+            <input type="file" id="inputExcelImport" accept=".xlsx, .xls, .csv" style="display: none;" onchange="importarPlanilhaExcel(this)">
+
             <button onclick="exportarBackup()" class="btn-header btn-header-primary">📤 Exportar Backup</button>
             <button onclick="document.getElementById('inputBackup').click()" class="btn-header">📥 Restaurar Backup</button>
             <input type="file" id="inputBackup" accept=".json" style="display: none;" onchange="importarBackup(this)">
@@ -283,7 +291,6 @@
                     <label id="labelVenda">Valor Total Venda/Cobrança*</label>
                     <div class="input-moeda">
                         <span>R$</span>
-                        <!-- Valor total calculado automaticamente pelo somatório dos pagamentos -->
                         <input type="text" id="venda" value="0,00" readonly>
                     </div>
                 </div>
@@ -417,14 +424,19 @@
 
     function normalizarData(dStr) {
         if (!dStr) return '';
-        if (dStr.includes('/')) {
-            const p = dStr.split('/');
+        if (typeof dStr === 'number') {
+            // Conversão de data serial do Excel se necessário
+            const d = new Date((dStr - (25567 + 2)) * 86400 * 1000);
+            return d.toISOString().slice(0, 10);
+        }
+        let str = dStr.toString().trim();
+        if (str.includes('/')) {
+            const p = str.split('/');
             if (p.length === 3) return `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}`;
         }
-        return dStr;
+        return str;
     }
 
-    // Soma automática das formas de pagamento para preencher o Valor Total Venda/Cobrança
     function recalcularValorTotalVenda() {
         let somaTotalPagamentos = 0;
         document.querySelectorAll('.sub-pag-valor').forEach(input => {
@@ -532,6 +544,88 @@
             document.getElementById('displayLogo').style.display = 'block';
             document.getElementById('logoPlaceholder').style.display = 'none';
         }
+    }
+
+    // NOVA FUNÇÃO: Importar Planilha de Excel com precisão e cálculos fidedignos
+    function importarPlanilhaExcel(input) {
+        const file = input.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function(e) {
+            try {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const jsonRows = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+                if (jsonRows.length === 0) {
+                    alert("A planilha está vazia ou não pôde ser lida.");
+                    return;
+                }
+
+                let importadosCount = 0;
+                jsonRows.forEach(row => {
+                    // Mapeia chaves flexíveis para garantir leitura correta independente dos nomes das colunas
+                    const dataBruta = row["Data"] || row["data"] || row["DATA"] || hojeISO;
+                    const movimento = (row["Movimento"] || row["movimento"] || row["MOVIMENTO"] || "ENTRADA").toUpperCase();
+                    const os = row["OS"] || row["os"] || row["Os"] || "";
+                    const descricao = row["Descricao"] || row["Descrição"] || row["descricao"] || "Importado Excel";
+                    const tipo = row["Tipo"] || row["tipo"] || "Serviço";
+                    const modelo = row["Marca"] || row["Modelo"] || row["modelo"] || "Apple";
+                    
+                    const custoPecaVal = converterParaNumero(row["Custo Peca"] || row["Custo Peça"] || row["custo_peca"] || 0);
+                    const valorVendaVal = converterParaNumero(row["Valor Venda"] || row["venda"] || row["Valor"] || 0);
+                    const fornecedorNome = row["Fornecedor_1"] || row["Fornecedor"] || row["fornecedor"] || "";
+
+                    // Captura formas de pagamento individuais se existirem na planilha
+                    let pagamentosArr = [];
+                    let pixVal = converterParaNumero(row["Pgto_Pix"] || row["Pix"] || 0);
+                    let dinheiroVal = converterParaNumero(row["Pgto_Dinheiro"] || row["Dinheiro"] || 0);
+                    let debitoVal = converterParaNumero(row["Pgto_Debito"] || row["Débito"] || 0);
+                    let creditoVal = converterParaNumero(row["Pgto_Credito"] || row["Crédito"] || 0);
+
+                    if (pixVal > 0) pagamentosArr.push({ forma: "PIX", valor: pixVal });
+                    if (dinheiroVal > 0) pagamentosArr.push({ forma: "DINHEIRO", valor: dinheiroVal });
+                    if (debitoVal > 0) pagamentosArr.push({ forma: "DÉBITO", valor: debitoVal });
+                    if (creditoVal > 0) pagamentosArr.push({ forma: "CRÉDITO", valor: creditoVal });
+
+                    // Se não houver pagamentos detalhados mas houver venda, assume PIX por padrão para manter o financeiro alinhado
+                    if (pagamentosArr.length === 0 && valorVendaVal > 0) {
+                        pagamentosArr.push({ forma: "PIX", valor: valorVendaVal });
+                    }
+
+                    const lucroCalculado = (movimento === "SAIDA") ? -valorVendaVal : (valorVendaVal - custoPecaVal);
+
+                    const novoRegistro = {
+                        movimento: movimento.includes("SAÍ") || movimento.includes("SAI") ? "SAIDA" : (movimento.includes("DES") ? "DESISTENCIA" : "ENTRADA"),
+                        data: normalizarData(dataBruta),
+                        os: os.toString(),
+                        descricao: descricao.toString(),
+                        tipo: tipo.toString(),
+                        modelo: modelo.toString(),
+                        fornecedores: [{ item: descricao, fornecedor: fornecedorNome, custo: custoPecaVal }],
+                        custoPecaTotal: custoPecaVal,
+                        venda: valorVendaVal,
+                        pagamentos: pagamentosArr,
+                        lucro: lucroCalculado
+                    };
+
+                    registros.push(novoRegistro);
+                    importadosCount++;
+                });
+
+                localStorage.setItem('gestao_v10', JSON.stringify(registros));
+                aplicarPredefinicaoPeriodo();
+                alert(`✅ Sucesso! Foram importados ${importadosCount} registros da planilha com cálculos fidedignos.`);
+            } catch (err) {
+                console.error(err);
+                alert("Erro ao processar o arquivo Excel. Verifique se o formato está correto.");
+            }
+            input.value = ""; // Reseta o input file
+        };
+        reader.readAsArrayBuffer(file);
     }
 
     function aplicarPredefinicaoPeriodo() {
