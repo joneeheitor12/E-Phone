@@ -2,9 +2,14 @@
 <html lang="pt-br">
 <head>
     <meta charset="UTF-8">
-    <title>Gestão Profissional - E-phone</title>
+    <title>Gestão Profissional - E-phone (Cloud Realtime)</title>
     <!-- Biblioteca SheetJS para leitura de planilhas Excel com precisão -->
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    
+    <!-- Firebase SDKs (Compat Version para uso direto em HTML/CDN) -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
     <style>
         :root { 
             --primary: #28a745; 
@@ -21,6 +26,24 @@
         .logo-area { display: flex; align-items: center; gap: 20px; }
         #displayLogo { max-height: 80px; border-radius: 8px; display: none; }
         
+        .status-cloud {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: rgba(16, 185, 129, 0.15);
+            color: #059669;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            border: 1px solid #059669;
+        }
+        .status-cloud.syncing {
+            background: rgba(245, 158, 11, 0.15);
+            color: #d97706;
+            border-color: #d97706;
+        }
+
         .header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .btn-header { font-size: 11px; font-weight: 700; cursor: pointer; padding: 7px 12px; border-radius: 6px; border: 1px solid #cbd5e0; background: #fff; color: #4a5568; display: flex; align-items: center; gap: 5px; transition: all 0.2s; }
         .btn-header:hover { background: #edf2f7; }
@@ -138,9 +161,10 @@
             <div id="logoPlaceholder" style="width:60px; height:60px; background:#eee; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:10px;">SEM LOGO</div>
             <div>
                 <h1 style="margin:0; font-size: 22px;">Gestão Empresarial - E-phone</h1>
-                <div style="margin-top: 4px; display: flex; gap: 8px;">
+                <div style="margin-top: 4px; display: flex; gap: 8px; align-items: center;">
                     <button onclick="document.getElementById('inputLogo').click()" class="btn-header">📷 Logo</button>
                     <input type="file" id="inputLogo" accept="image/*" style="display: none;" onchange="uploadLogo(this)">
+                    <span id="cloudStatus" class="status-cloud">● Nuvem Conectada</span>
                 </div>
             </div>
         </div>
@@ -219,7 +243,7 @@
     <!-- Formulário de Lançamento -->
     <div class="card">
         <h2 id="tituloForm" style="margin-top:0; font-size: 16px; color: #2d3748; margin-bottom: 14px;">Novo Lançamento / Ordem de Serviço</h2>
-        <input type="hidden" id="editIndex" value="-1">
+        <input type="hidden" id="editId" value="">
         
         <div class="form-layout">
             <div class="form-row">
@@ -383,15 +407,81 @@
     </div>
 </div>
 
+<!-- CONFIGURAÇÃO DO FIREBASE COM REALTIME (onSnapshot) -->
 <script>
-    let registros = JSON.parse(localStorage.getItem('gestao_v10')) || 
-                    JSON.parse(localStorage.getItem('gestao_v9')) || 
-                    JSON.parse(localStorage.getItem('gestao_v8')) || 
-                    JSON.parse(localStorage.getItem('gestao_v7')) || 
-                    JSON.parse(localStorage.getItem('gestao_v6')) || 
-                    JSON.parse(localStorage.getItem('gestao_v5')) || 
-                    JSON.parse(localStorage.getItem('gestao_v4')) || [];
+    // ==========================================================
+    // ⚙️ CONFIGURAÇÃO DO FIREBASE (Insira as chaves do seu projeto)
+    // ==========================================================
+    const firebaseConfig = {
+        apiKey: "SUA_API_KEY_AQUI",
+        authDomain: "SEU_PROJETO.firebaseapp.com",
+        projectId: "SEU_PROJETO_ID",
+        storageBucket: "SEU_PROJETO.appspot.com",
+        messagingSenderId: "SEU_MESSAGING_SENDER_ID",
+        appId: "SEU_APP_ID"
+    };
 
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+    const COLLECTION_NAME = "ephone_lancamentos";
+
+    let registros = [];
+    let isRecebendoDaNuvem = false;
+
+    function setCloudStatus(texto, isWarning) {
+        const statusEl = document.getElementById('cloudStatus');
+        if(statusEl) {
+            statusEl.innerText = texto;
+            statusEl.className = isWarning ? "status-cloud syncing" : "status-cloud";
+        }
+    }
+
+    // Ouvinte em tempo real da nuvem
+    db.collection(COLLECTION_NAME).onSnapshot((snapshot) => {
+        isRecebendoDaNuvem = true;
+        registros = [];
+        snapshot.forEach(docSnap => {
+            const dataDoc = docSnap.data();
+            dataDoc.idFirebase = docSnap.id; // ID único do documento no Firestore
+            registros.push(dataDoc);
+        });
+        isRecebendoDaNuvem = false;
+
+        atualizar();
+        setCloudStatus("● Nuvem Conectada", false);
+    }, (error) => {
+        console.error("Erro no ouvinte do Firebase:", error);
+        setCloudStatus("● Modo Offline", true);
+    });
+
+    async function salvarNaNuvem(item, idFirebase) {
+        setCloudStatus("● Sincronizando...", true);
+        try {
+            if (idFirebase) {
+                // Atualiza o registro existente
+                await db.collection(COLLECTION_NAME).doc(idFirebase).set(item);
+            } else {
+                // Cria um novo registro
+                await db.collection(COLLECTION_NAME).add(item);
+            }
+            setCloudStatus("● Nuvem Conectada", false);
+        } catch (e) {
+            console.error("Erro ao salvar na nuvem:", e);
+            setCloudStatus("● Erro de Sincronização", true);
+        }
+    }
+
+    async function excluirDaNuvem(idFirebase) {
+        if (!idFirebase) return;
+        try {
+            await db.collection(COLLECTION_NAME).doc(idFirebase).delete();
+        } catch (e) {
+            console.error("Erro ao excluir da nuvem:", e);
+        }
+    }
+</script>
+
+<script>
     const hojeObj = new Date();
     const hojeISO = hojeObj.toISOString().slice(0, 10);
     
@@ -425,7 +515,6 @@
     function normalizarData(dStr) {
         if (!dStr) return '';
         if (typeof dStr === 'number') {
-            // Conversão de data serial do Excel se necessário
             const d = new Date((dStr - (25567 + 2)) * 86400 * 1000);
             return d.toISOString().slice(0, 10);
         }
@@ -546,13 +635,12 @@
         }
     }
 
-    // NOVA FUNÇÃO: Importar Planilha de Excel com precisão e cálculos fidedignos
     function importarPlanilhaExcel(input) {
         const file = input.files[0];
         if (!file) return;
 
         const reader = new FileReader();
-        reader.onload = function(e) {
+        reader.onload = async function(e) {
             try {
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
@@ -566,8 +654,7 @@
                 }
 
                 let importadosCount = 0;
-                jsonRows.forEach(row => {
-                    // Mapeia chaves flexíveis para garantir leitura correta independente dos nomes das colunas
+                for (const row of jsonRows) {
                     const dataBruta = row["Data"] || row["data"] || row["DATA"] || hojeISO;
                     const movimento = (row["Movimento"] || row["movimento"] || row["MOVIMENTO"] || "ENTRADA").toUpperCase();
                     const os = row["OS"] || row["os"] || row["Os"] || "";
@@ -579,7 +666,6 @@
                     const valorVendaVal = converterParaNumero(row["Valor Venda"] || row["venda"] || row["Valor"] || 0);
                     const fornecedorNome = row["Fornecedor_1"] || row["Fornecedor"] || row["fornecedor"] || "";
 
-                    // Captura formas de pagamento individuais se existirem na planilha
                     let pagamentosArr = [];
                     let pixVal = converterParaNumero(row["Pgto_Pix"] || row["Pix"] || 0);
                     let dinheiroVal = converterParaNumero(row["Pgto_Dinheiro"] || row["Dinheiro"] || 0);
@@ -591,7 +677,6 @@
                     if (debitoVal > 0) pagamentosArr.push({ forma: "DÉBITO", valor: debitoVal });
                     if (creditoVal > 0) pagamentosArr.push({ forma: "CRÉDITO", valor: creditoVal });
 
-                    // Se não houver pagamentos detalhados mas houver venda, assume PIX por padrão para manter o financeiro alinhado
                     if (pagamentosArr.length === 0 && valorVendaVal > 0) {
                         pagamentosArr.push({ forma: "PIX", valor: valorVendaVal });
                     }
@@ -612,18 +697,17 @@
                         lucro: lucroCalculado
                     };
 
-                    registros.push(novoRegistro);
+                    // Salva um por um diretamente na nuvem
+                    await db.collection(COLLECTION_NAME).add(novoRegistro);
                     importadosCount++;
-                });
+                }
 
-                localStorage.setItem('gestao_v10', JSON.stringify(registros));
-                aplicarPredefinicaoPeriodo();
-                alert(`✅ Sucesso! Foram importados ${importadosCount} registros da planilha com cálculos fidedignos.`);
+                alert(`✅ Sucesso! Foram importados e sincronizados ${importadosCount} registros da planilha.`);
             } catch (err) {
                 console.error(err);
-                alert("Erro ao processar o arquivo Excel. Verifique se o formato está correto.");
+                alert("Erro ao processar o arquivo Excel.");
             }
-            input.value = ""; // Reseta o input file
+            input.value = "";
         };
         reader.readAsArrayBuffer(file);
     }
@@ -700,7 +784,7 @@
         }
 
         const lucroCalculado = (mov === "SAIDA") ? -vendaValor : (vendaValor - custoTotalPecas);
-        const index = document.getElementById('editIndex').value;
+        const idFirebase = document.getElementById('editId').value;
         
         const item = {
             movimento: mov,
@@ -716,22 +800,20 @@
             lucro: lucroCalculado
         };
         
-        if (index === "-1") registros.unshift(item);
-        else { registros[index] = item; document.getElementById('editIndex').value = "-1"; }
-        
-        localStorage.setItem('gestao_v10', JSON.stringify(registros));
-        atualizar();
-        
+        // Salva na nuvem (cria ou atualiza)
+        salvarNaNuvem(item, idFirebase || null);
+
         document.getElementById('os').value = '';
         document.getElementById('descricao').value = '';
         document.getElementById('venda').value = '0,00';
         document.getElementById('corpoSubFornecedores').innerHTML = '';
         document.getElementById('corpoSubPagamentos').innerHTML = '';
+        document.getElementById('editId').value = '';
         adicionarLinhaFornecedor();
         adicionarLinhaPagamento();
         document.getElementById('tituloForm').innerText = "Novo Lançamento / Ordem de Serviço";
         tratarMudancaMovimento();
-        alert("Registro salvo com sucesso!");
+        alert("Registro salvo na nuvem com sucesso!");
     }
 
     function atualizar() {
@@ -795,8 +877,8 @@
                 <td><small>${descPagtoStr}</small></td>
                 <td style="font-weight:bold; color:${rLucro < 0 ? '#dc3545' : '#28a745'}">R$ ${formatarParaReal(rLucro)}</td>
                 <td>
-                    <button class="btn-act" style="background:#ffa000" onclick="editar(${registros.indexOf(r)})">✎</button>
-                    <button class="btn-act" style="background:#dc3545" onclick="excluir(${registros.indexOf(r)})">✕</button>
+                    <button class="btn-act" style="background:#ffa000" onclick="editar('${r.idFirebase}')">✎</button>
+                    <button class="btn-act" style="background:#dc3545" onclick="excluir('${r.idFirebase}')">✕</button>
                 </td>
             </tr>`;
         });
@@ -820,8 +902,10 @@
         document.getElementById('corpoTabela').innerHTML = html || '<tr><td colspan="12" style="text-align:center; padding:20px; color:#888;">Nenhum lançamento no período selecionado.</td></tr>';
     }
 
-    function editar(i) {
-        const r = registros[i];
+    function editar(idFirebase) {
+        const r = registros.find(item => item.idFirebase === idFirebase);
+        if (!r) return;
+
         document.getElementById('movimento').value = r.movimento || 'ENTRADA';
         tratarMudancaMovimento();
 
@@ -846,17 +930,15 @@
             adicionarLinhaPagamento('PIX', r.venda || 0);
         }
 
-        document.getElementById('editIndex').value = i;
+        document.getElementById('editId').value = idFirebase;
         window.scrollTo({ top: 0, behavior: 'smooth' });
         document.getElementById('tituloForm').innerText = "Editando Lançamento / Ordem de Serviço";
         calcularLucroAuto();
     }
 
-    function excluir(i) { 
-        if(confirm("Deseja realmente excluir este lançamento?")) { 
-            registros.splice(i,1); 
-            localStorage.setItem('gestao_v10', JSON.stringify(registros)); 
-            atualizar(); 
+    function excluir(idFirebase) { 
+        if(confirm("Deseja realmente excluir este lançamento da nuvem?")) { 
+            excluirDaNuvem(idFirebase);
         } 
     }
 
@@ -992,11 +1074,17 @@
         const file = input.files[0];
         if (!file) return;
         const reader = new FileReader();
-        reader.onload = function(e) {
-            registros = JSON.parse(e.target.result);
-            localStorage.setItem('gestao_v10', JSON.stringify(registros));
-            atualizar();
-            alert("Backup restaurado com sucesso!");
+        reader.onload = async function(e) {
+            try {
+                const dadosBackup = JSON.parse(e.target.result);
+                for (const item of dadosBackup) {
+                    delete item.idFirebase; // Remove ID antigo para recriar na nuvem limpo
+                    await db.collection(COLLECTION_NAME).add(item);
+                }
+                alert("Backup restaurado e sincronizado com a nuvem com sucesso!");
+            } catch(err) {
+                alert("Erro ao importar o backup.");
+            }
         };
         reader.readAsText(file);
     }
